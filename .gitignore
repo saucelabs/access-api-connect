@@ -1,0 +1,17 @@
+# Build artifacts
+/dist/
+/access-api-connect
+/access-api-connect.exe
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# GoReleaser local state
+.goreleaser/
