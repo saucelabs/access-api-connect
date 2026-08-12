@@ -2,14 +2,14 @@
 // Labs RDC Access API session, using the session's multiplex-capable
 // WebSocket endpoint for low-level device access.
 //
-//   * IOS     — takes over /var/run/usbmuxd (root required). PLIST traffic
-//               is partially answered locally; Connect / ReadPairRecord /
-//               ReadBUID switch their socket into raw passthrough on a
-//               fresh multiplex channel.
-//   * ANDROID — listens on 127.0.0.1:7001 and pipes each accepted TCP
-//               connection straight to its own WebSocket as raw
-//               ADB-protocol bytes. Run `adb connect localhost:7001` to
-//               attach.
+//   - IOS     — takes over /var/run/usbmuxd (root required). PLIST traffic
+//     is partially answered locally; Connect / ReadPairRecord /
+//     ReadBUID switch their socket into raw passthrough on a
+//     fresh multiplex channel.
+//   - ANDROID — listens on 127.0.0.1:7001 and pipes each accepted TCP
+//     connection straight to its own WebSocket as raw
+//     ADB-protocol bytes. Run `adb connect localhost:7001` to
+//     attach.
 //
 // Session creation is NOT performed here. Bring an already-ACTIVE session
 // id from your upstream flow.
@@ -69,6 +69,12 @@ func vlog(format string, args ...interface{}) {
 	if verboseLogging {
 		log.Printf(format, args...)
 	}
+}
+
+// basicAuthHeader builds an HTTP Basic Authorization header value from raw
+// Sauce credentials.
+func basicAuthHeader(username, accessKey string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+accessKey))
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +184,7 @@ func restoreSocket() {
 // Run loops
 // ---------------------------------------------------------------------------
 
-func runIOS(ctx context.Context, bridge *DeviceBridge) error {
+func runIOS(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, username, accessKey string) error {
 	if err := iosSupportError(runtime.GOOS); err != nil {
 		return err
 	}
@@ -187,12 +193,13 @@ func runIOS(ctx context.Context, bridge *DeviceBridge) error {
 			"  sudo SAUCE_REGION=$SAUCE_REGION SAUCE_USERNAME=$SAUCE_USERNAME SAUCE_ACCESS_KEY=$SAUCE_ACCESS_KEY %s <sessionId>",
 			usbmuxdSocket, os.Args[0])
 	}
+	authHeader := basicAuthHeader(username, accessKey)
 
 	// The reader loop must be running before we issue any request —
 	// otherwise the server's response sits in the socket buffer with
 	// nothing consuming it and FetchDeviceProperties times out.
 	readerErrCh := make(chan error, 1)
-	go func() { readerErrCh <- bridge.ReaderLoop(ctx) }()
+	go func() { readerErrCh <- bridge.RunUntilError(ctx) }()
 
 	properties, err := bridge.FetchDeviceProperties(ctx, 10*time.Second)
 	if err != nil {
@@ -215,13 +222,73 @@ func runIOS(ctx context.Context, bridge *DeviceBridge) error {
 
 	fmt.Printf("\nReady. usbmuxd mounted at %s. Press Ctrl+C to stop.\n\n", usbmuxdSocket)
 
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-readerErrCh:
-		return fmt.Errorf("ws reader: %w", err)
-	case err := <-serverErrCh:
-		return fmt.Errorf("unix server: %w", err)
+	// Service the connection until Ctrl+C. A dead WebSocket is not fatal:
+	// the usbmuxd mount stays put, in-flight channels are dropped (tools
+	// see a device blip), and we redial while the session is ACTIVE.
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-serverErrCh:
+			return fmt.Errorf("unix server: %w", err)
+		case err := <-readerErrCh:
+			if ctx.Err() != nil {
+				return nil
+			}
+			log.Printf("connection lost: %v — reconnecting (usbmuxd stays mounted)", err)
+			bridge.ResetForReconnect()
+			if err := reconnect(ctx, bridge, apiURL, sessionID, authHeader, readerErrCh); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				return fmt.Errorf("reconnect: %w", err)
+			}
+			log.Printf("reconnected — device available again")
+		}
+	}
+}
+
+// reconnect redials the session WebSocket with capped exponential backoff.
+// It checks the session is still ACTIVE first and returns an error once it
+// isn't, so the caller exits instead of looping on a dead session; REST
+// errors are treated as transient. On success the reader goroutine is
+// restarted and a device-properties round trip confirms the tunnel.
+func reconnect(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, authHeader string, readerErrCh chan error) error {
+	const maxBackoff = 5 * time.Second
+	backoff := 500 * time.Millisecond
+
+	for attempt := 1; ; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if info, err := fetchSession(ctx, apiURL, sessionID, authHeader); err == nil {
+			if state, _ := info["state"].(string); state != "ACTIVE" {
+				return fmt.Errorf("session is no longer active (state=%q)", state)
+			}
+		}
+
+		if err := bridge.Reconnect(ctx); err != nil {
+			log.Printf("reconnect attempt %d failed: %v (next try in %s)", attempt, err, backoff)
+		} else {
+			go func() { readerErrCh <- bridge.RunUntilError(ctx) }()
+			if _, err := bridge.FetchDeviceProperties(ctx, 10*time.Second); err == nil {
+				return nil
+			} else {
+				log.Printf("reconnect attempt %d: tunnel check failed: %v (next try in %s)", attempt, err, backoff)
+				_ = bridge.Close()
+				<-readerErrCh // reap the reader we just started
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
 }
 
@@ -299,7 +366,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte(*username+":"+*accessKey))
+	authHeader := basicAuthHeader(*username, *accessKey)
 
 	info, err := waitForActive(ctx, resolvedURL, sessionID, authHeader)
 	if err != nil {
@@ -328,7 +395,7 @@ func main() {
 		}
 		defer bridge.Close()
 
-		if err := runIOS(ctx, bridge); err != nil && !errors.Is(err, context.Canceled) {
+		if err := runIOS(ctx, bridge, resolvedURL, sessionID, *username, *accessKey); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("error: %v", err)
 			os.Exit(1)
 		}
