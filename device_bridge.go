@@ -54,7 +54,6 @@ type DeviceBridge struct {
 	deviceProperties map[string]interface{}
 	localDeviceID    int
 
-	// Keepalive timing (defaults above); tests may shorten before starting.
 	pingInterval time.Duration
 	pongTimeout  time.Duration
 	writeWait    time.Duration
