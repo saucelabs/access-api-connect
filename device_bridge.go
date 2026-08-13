@@ -21,8 +21,7 @@ type closeHandler func() error
 
 // Keepalive: we ping on our own cadence and arm a read deadline, so a
 // silently dead link (sleep, NAT expiry, mid-path reset) fails the read in
-// seconds instead of blocking until the OS gives up. Per-bridge fields
-// (not globals) so tests can shorten them without racing each other.
+// seconds instead of blocking until the OS gives up.
 const (
 	defaultPingInterval = 10 * time.Second // outbound ping cadence
 	defaultPongTimeout  = 25 * time.Second // max silence before the link is dead
