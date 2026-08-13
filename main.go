@@ -248,10 +248,10 @@ func runIOS(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, userna
 	}
 }
 
-// reconnect redials the session WebSocket with capped exponential backoff.
-// It checks the session is still ACTIVE first and returns an error once it
-// isn't, so the caller exits instead of looping on a dead session; REST
-// errors are treated as transient. On success the reader goroutine is
+// reconnect redials the session WebSocket with capped backoff (0.5s-5s).
+// Each attempt first reads the session state: no longer ACTIVE ends the
+// loop with an error (caller exits); a failed read (unreachable API, HTTP
+// error, bad body) is transient and retried. On success the reader is
 // restarted and a device-properties round trip confirms the tunnel.
 func reconnect(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, authHeader string, readerErrCh chan error) error {
 	const maxBackoff = 5 * time.Second
@@ -262,6 +262,7 @@ func reconnect(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, aut
 			return ctx.Err()
 		}
 
+		// Non-ACTIVE stops the loop; a failed read (err != nil) is transient.
 		if info, err := fetchSession(ctx, apiURL, sessionID, authHeader); err == nil {
 			if state, _ := info["state"].(string); state != "ACTIVE" {
 				return fmt.Errorf("session is no longer active (state=%q)", state)
