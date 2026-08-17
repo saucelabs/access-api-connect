@@ -1,4 +1,4 @@
-package main
+package bridge
 
 import (
 	"log"
@@ -7,12 +7,12 @@ import (
 	"sync/atomic"
 )
 
-// localBridge is the subset of DeviceBridge the local usbmuxd handler
+// LocalBridge is the subset of DeviceBridge the local usbmuxd handler
 // actually needs. Defining it as an interface lets tests substitute a
 // fake without dragging in a real WebSocket.
-type localBridge interface {
+type LocalBridge interface {
 	AllocChannel() uint32
-	RegisterHandlers(cid uint32, onData dataHandler, onClose closeHandler)
+	RegisterHandlers(cid uint32, onData DataHandler, onClose CloseHandler)
 	SendToChannel(cid uint32, payload []byte) error
 	CloseChannel(cid uint32) error
 	DeviceProperties() map[string]interface{}
@@ -32,7 +32,7 @@ var localConnSeq atomic.Uint64
 // the local socket switches to raw passthrough on that channel.
 type LocalUsbmuxHandler struct {
 	id              uint64
-	bridge          localBridge
+	bridge          LocalBridge
 	conn            net.Conn
 	upstreamChannel uint32
 	inPassthrough   bool
@@ -42,7 +42,7 @@ type LocalUsbmuxHandler struct {
 }
 
 // NewLocalUsbmuxHandler wires the handler to a freshly accepted conn.
-func NewLocalUsbmuxHandler(bridge localBridge, conn net.Conn) *LocalUsbmuxHandler {
+func NewLocalUsbmuxHandler(bridge LocalBridge, conn net.Conn) *LocalUsbmuxHandler {
 	return &LocalUsbmuxHandler{
 		id:     localConnSeq.Add(1),
 		bridge: bridge,

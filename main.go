@@ -13,6 +13,10 @@
 //
 // Session creation is NOT performed here. Bring an already-ACTIVE session
 // id from your upstream flow.
+//
+// This file is the CLI only. The reusable half lives in ./bridge, which
+// takes a net.Listener so an importing program can choose how the device is
+// exposed locally — the CLI's choices below are just one such choice.
 package main
 
 import (
@@ -27,9 +31,10 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"sync"
 	"syscall"
 	"time"
+
+	"github.com/saucelabs/access-api-connect/bridge"
 )
 
 // iosSupportError returns a non-nil error explaining why iOS cannot be
@@ -60,87 +65,6 @@ var (
 	commit  = "none"
 	date    = "unknown"
 )
-
-// verboseLogging is set once in main() before any goroutines spin up, so
-// we can read it without a lock thereafter. Gates per-connection log lines.
-var verboseLogging bool
-
-func vlog(format string, args ...interface{}) {
-	if verboseLogging {
-		log.Printf(format, args...)
-	}
-}
-
-// basicAuthHeader builds an HTTP Basic Authorization header value from raw
-// Sauce credentials.
-func basicAuthHeader(username, accessKey string) string {
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+accessKey))
-}
-
-// ---------------------------------------------------------------------------
-// Server helpers
-// ---------------------------------------------------------------------------
-
-func runUnixServer(ctx context.Context, bridge localBridge, socketPath string) error {
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	if err := os.Chmod(socketPath, 0o666); err != nil {
-		log.Printf("could not chmod %s: %v", socketPath, err)
-	}
-	log.Printf("listening on %s", socketPath)
-
-	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
-	}()
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return nil
-			}
-			return err
-		}
-		go NewLocalUsbmuxHandler(bridge, conn).Run()
-	}
-}
-
-func runTCPServer(ctx context.Context, wsURL, sessionID, authB64, host string, port int) error {
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	log.Printf("listening on %s:%d", host, port)
-
-	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
-	}()
-
-	var wg sync.WaitGroup
-	defer wg.Wait()
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return nil
-			}
-			return err
-		}
-		bridge := NewAdbConnectionBridge(wsURL, sessionID, authB64, conn)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			bridge.Run(ctx)
-		}()
-	}
-}
 
 // ---------------------------------------------------------------------------
 // usbmuxd socket take-over (iOS path)
@@ -180,11 +104,25 @@ func restoreSocket() {
 	}
 }
 
+// listenUsbmuxUnix binds the unix socket the CLI serves usbmux on. 0666 so
+// local clients running as the developer's own user can still reach it after
+// we bound it as root.
+func listenUsbmuxUnix(socketPath string) (net.Listener, error) {
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(socketPath, 0o666); err != nil {
+		log.Printf("could not chmod %s: %v", socketPath, err)
+	}
+	return listener, nil
+}
+
 // ---------------------------------------------------------------------------
 // Run loops
 // ---------------------------------------------------------------------------
 
-func runIOS(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, username, accessKey string) error {
+func runIOS(ctx context.Context, deviceBridge *bridge.DeviceBridge, apiURL, sessionID, username, accessKey string) error {
 	if err := iosSupportError(runtime.GOOS); err != nil {
 		return err
 	}
@@ -193,15 +131,15 @@ func runIOS(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, userna
 			"  sudo SAUCE_REGION=$SAUCE_REGION SAUCE_USERNAME=$SAUCE_USERNAME SAUCE_ACCESS_KEY=$SAUCE_ACCESS_KEY %s <sessionId>",
 			usbmuxdSocket, os.Args[0])
 	}
-	authHeader := basicAuthHeader(username, accessKey)
+	authHeader := bridge.BasicAuthHeader(username, accessKey)
 
 	// The reader loop must be running before we issue any request —
 	// otherwise the server's response sits in the socket buffer with
 	// nothing consuming it and FetchDeviceProperties times out.
 	readerErrCh := make(chan error, 1)
-	go func() { readerErrCh <- bridge.RunUntilError(ctx) }()
+	go func() { readerErrCh <- deviceBridge.RunUntilError(ctx) }()
 
-	properties, err := bridge.FetchDeviceProperties(ctx, 10*time.Second)
+	properties, err := deviceBridge.FetchDeviceProperties(ctx, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to fetch device properties: %w", err)
 	}
@@ -217,8 +155,13 @@ func runIOS(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, userna
 	}
 	defer restoreSocket()
 
+	listener, err := listenUsbmuxUnix(usbmuxdSocket)
+	if err != nil {
+		return fmt.Errorf("unix server: %w", err)
+	}
+
 	serverErrCh := make(chan error, 1)
-	go func() { serverErrCh <- runUnixServer(ctx, bridge, usbmuxdSocket) }()
+	go func() { serverErrCh <- bridge.ServeUsbmux(ctx, listener, deviceBridge) }()
 
 	fmt.Printf("\nReady. usbmuxd mounted at %s. Press Ctrl+C to stop.\n\n", usbmuxdSocket)
 
@@ -236,8 +179,8 @@ func runIOS(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, userna
 				return nil
 			}
 			log.Printf("connection lost: %v — reconnecting (usbmuxd stays mounted)", err)
-			bridge.ResetForReconnect()
-			if err := reconnect(ctx, bridge, apiURL, sessionID, authHeader, readerErrCh); err != nil {
+			deviceBridge.ResetForReconnect()
+			if err := bridge.ReconnectWithBackoff(ctx, deviceBridge, apiURL, sessionID, authHeader, readerErrCh); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return nil
 				}
@@ -248,59 +191,20 @@ func runIOS(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, userna
 	}
 }
 
-// reconnect redials the session WebSocket with capped backoff (0.5s-5s).
-// Each attempt first reads the session state: no longer ACTIVE ends the
-// loop with an error (caller exits); a failed read (unreachable API, HTTP
-// error, bad body) is transient and retried. On success the reader is
-// restarted and a device-properties round trip confirms the tunnel.
-func reconnect(ctx context.Context, bridge *DeviceBridge, apiURL, sessionID, authHeader string, readerErrCh chan error) error {
-	const maxBackoff = 5 * time.Second
-	backoff := 500 * time.Millisecond
-
-	for attempt := 1; ; attempt++ {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		// Non-ACTIVE stops the loop; a failed read (err != nil) is transient.
-		if info, err := fetchSession(ctx, apiURL, sessionID, authHeader); err == nil {
-			if state, _ := info["state"].(string); state != "ACTIVE" {
-				return fmt.Errorf("session is no longer active (state=%q)", state)
-			}
-		}
-
-		if err := bridge.Reconnect(ctx); err != nil {
-			log.Printf("reconnect attempt %d failed: %v (next try in %s)", attempt, err, backoff)
-		} else {
-			go func() { readerErrCh <- bridge.RunUntilError(ctx) }()
-			if _, err := bridge.FetchDeviceProperties(ctx, 10*time.Second); err == nil {
-				return nil
-			} else {
-				log.Printf("reconnect attempt %d: tunnel check failed: %v (next try in %s)", attempt, err, backoff)
-				_ = bridge.Close()
-				<-readerErrCh // reap the reader we just started
-			}
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-		}
-		if backoff *= 2; backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-	}
-}
-
 func runAndroid(ctx context.Context, wsURL, sessionID, username, accessKey string) error {
 	authB64 := base64.StdEncoding.EncodeToString([]byte(username + ":" + accessKey))
+
+	// Bind before printing "Ready" so the address is genuinely accepting by
+	// the time the user is told to run `adb connect`.
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", adbBindHost, adbPort))
+	if err != nil {
+		return fmt.Errorf("tcp server: %w", err)
+	}
+
 	serverErrCh := make(chan error, 1)
 	go func() {
-		serverErrCh <- runTCPServer(ctx, wsURL, sessionID, authB64, adbBindHost, adbPort)
+		serverErrCh <- bridge.ServeADB(ctx, listener, wsURL, sessionID, authB64)
 	}()
-	// Let the listener bind before we print "Ready".
-	time.Sleep(200 * time.Millisecond)
 
 	fmt.Printf("\nReady. ADB bridge on %s:%d. Run `adb connect localhost:%d` to attach. Press Ctrl+C to stop.\n\n",
 		adbBindHost, adbPort, adbPort)
@@ -335,7 +239,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Usage = usage
 	flag.Parse()
-	verboseLogging = *verboseShort || *verboseLong
+	bridge.SetVerboseLogging(*verboseShort || *verboseLong)
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.SetPrefix("access-api-connect: ")
@@ -355,7 +259,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "set SAUCE_USERNAME and SAUCE_ACCESS_KEY")
 		os.Exit(1)
 	}
-	resolvedURL, warning, err := resolveAPIURL(*apiURL, *region)
+	resolvedURL, warning, err := bridge.ResolveAPIURL(*apiURL, *region)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -367,19 +271,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	authHeader := basicAuthHeader(*username, *accessKey)
+	authHeader := bridge.BasicAuthHeader(*username, *accessKey)
 
-	info, err := waitForActive(ctx, resolvedURL, sessionID, authHeader)
+	info, err := bridge.WaitForActive(ctx, resolvedURL, sessionID, authHeader)
 	if err != nil {
 		log.Fatalf("session: %v", err)
 	}
 
-	osKind := nestedString(info, "device", "os")
+	osKind := bridge.NestedString(info, "device", "os")
 	if osKind != "IOS" && osKind != "ANDROID" {
 		log.Fatalf("unsupported os=%q (expected IOS or ANDROID)", osKind)
 	}
 
-	deviceURL := nestedString(info, "links", "vusbUrl")
+	deviceURL := bridge.NestedString(info, "links", "vusbUrl")
 	if deviceURL == "" {
 		links, _ := json.Marshal(info["links"])
 		log.Fatalf("no vusbUrl in session response. Make sure the session was started with low-level access capabilities. Available links: %s", links)
@@ -390,13 +294,13 @@ func main() {
 	log.Printf("ws url  : %s", deviceURL)
 
 	if osKind == "IOS" {
-		bridge := NewDeviceBridge(deviceURL, sessionID, *username, *accessKey)
-		if err := bridge.Connect(ctx); err != nil {
+		deviceBridge := bridge.NewDeviceBridge(deviceURL, sessionID, *username, *accessKey)
+		if err := deviceBridge.Connect(ctx); err != nil {
 			log.Fatalf("ws connect: %v", err)
 		}
-		defer bridge.Close()
+		defer deviceBridge.Close()
 
-		if err := runIOS(ctx, bridge, resolvedURL, sessionID, *username, *accessKey); err != nil && !errors.Is(err, context.Canceled) {
+		if err := runIOS(ctx, deviceBridge, resolvedURL, sessionID, *username, *accessKey); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("error: %v", err)
 			os.Exit(1)
 		}
