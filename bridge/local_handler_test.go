@@ -1,4 +1,4 @@
-package main
+package bridge
 
 import (
 	"bytes"
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// fakeBridge satisfies the localBridge interface but records what the
+// fakeBridge satisfies the LocalBridge interface but records what the
 // handler does instead of actually talking to a real WebSocket.
 type fakeBridge struct {
 	mu sync.Mutex
@@ -22,8 +22,8 @@ type fakeBridge struct {
 	sent     []sentFrame
 	closed   []uint32
 	handlers map[uint32]struct {
-		onData  dataHandler
-		onClose closeHandler
+		onData  DataHandler
+		onClose CloseHandler
 	}
 }
 
@@ -37,8 +37,8 @@ func newFakeBridge(props map[string]interface{}, devID int) *fakeBridge {
 		props: props,
 		devID: devID,
 		handlers: map[uint32]struct {
-			onData  dataHandler
-			onClose closeHandler
+			onData  DataHandler
+			onClose CloseHandler
 		}{},
 	}
 }
@@ -51,12 +51,12 @@ func (b *fakeBridge) AllocChannel() uint32 {
 	return b.next
 }
 
-func (b *fakeBridge) RegisterHandlers(cid uint32, onData dataHandler, onClose closeHandler) {
+func (b *fakeBridge) RegisterHandlers(cid uint32, onData DataHandler, onClose CloseHandler) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.handlers[cid] = struct {
-		onData  dataHandler
-		onClose closeHandler
+		onData  DataHandler
+		onClose CloseHandler
 	}{onData, onClose}
 }
 
@@ -143,15 +143,15 @@ func (c *fakeConn) bytesWritten() []byte {
 	return append([]byte(nil), c.out.Bytes()...)
 }
 
-func (c *fakeConn) LocalAddr() net.Addr                { return &net.UnixAddr{Net: "unix"} }
-func (c *fakeConn) RemoteAddr() net.Addr               { return &net.UnixAddr{Net: "unix"} }
-func (c *fakeConn) SetDeadline(time.Time) error        { return nil }
-func (c *fakeConn) SetReadDeadline(time.Time) error    { return nil }
-func (c *fakeConn) SetWriteDeadline(time.Time) error   { return nil }
+func (c *fakeConn) LocalAddr() net.Addr              { return &net.UnixAddr{Net: "unix"} }
+func (c *fakeConn) RemoteAddr() net.Addr             { return &net.UnixAddr{Net: "unix"} }
+func (c *fakeConn) SetDeadline(time.Time) error      { return nil }
+func (c *fakeConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *fakeConn) SetWriteDeadline(time.Time) error { return nil }
 
 // drive runs a LocalUsbmuxHandler against `script` and returns whatever
 // the handler wrote back to its local conn.
-func drive(t *testing.T, bridge localBridge, script []byte) []byte {
+func drive(t *testing.T, bridge LocalBridge, script []byte) []byte {
 	t.Helper()
 	conn := newFakeConn(script)
 	h := NewLocalUsbmuxHandler(bridge, conn)

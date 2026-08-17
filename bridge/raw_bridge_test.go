@@ -1,4 +1,4 @@
-package main
+package bridge
 
 import (
 	"bytes"
@@ -14,9 +14,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// startEchoServerForADB spins up a binary-echo WebSocket server. Every
+// startEchoServer spins up a binary-echo WebSocket server. Every
 // inbound binary frame is captured AND echoed back prefixed with "ECHO:".
-func startEchoServerForADB(t *testing.T) (url string, captured *[][]byte, mu *sync.Mutex, cleanup func()) {
+func startEchoServer(t *testing.T) (url string, captured *[][]byte, mu *sync.Mutex, cleanup func()) {
 	t.Helper()
 	var (
 		got      [][]byte
@@ -52,11 +52,11 @@ func startEchoServerForADB(t *testing.T) (url string, captured *[][]byte, mu *sy
 	return url, &got, &gotMu, srv.Close
 }
 
-func TestAdbConnectionBridgeRawPassthrough(t *testing.T) {
-	wsURL, captured, mu, cleanup := startEchoServerForADB(t)
+func TestRawConnectionBridgePassthrough(t *testing.T) {
+	wsURL, captured, mu, cleanup := startEchoServer(t)
 	defer cleanup()
 
-	// Stand up a TCP listener that hands each conn to AdbConnectionBridge.
+	// Stand up a TCP listener that hands each conn to RawConnectionBridge.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestAdbConnectionBridgeRawPassthrough(t *testing.T) {
 		if err != nil {
 			return
 		}
-		NewAdbConnectionBridge(wsURL, "session", "Yg==", conn).Run(ctx)
+		NewRawConnectionBridge(wsURL, "session", "Yg==", conn).Run(ctx)
 	}()
 
 	// Connect as if we were `adb` doing CNXN.

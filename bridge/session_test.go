@@ -1,4 +1,4 @@
-package main
+package bridge
 
 import (
 	"context"
@@ -18,16 +18,16 @@ func TestNestedString(t *testing.T) {
 		},
 	}
 
-	if got := nestedString(m, "device", "os"); got != "IOS" {
+	if got := NestedString(m, "device", "os"); got != "IOS" {
 		t.Errorf("device.os = %q, want IOS", got)
 	}
-	if got := nestedString(m, "links", "vusbUrl"); got != "wss://example/forward" {
+	if got := NestedString(m, "links", "vusbUrl"); got != "wss://example/forward" {
 		t.Errorf("links.vusbUrl mismatch: %q", got)
 	}
-	if got := nestedString(m, "device", "missing"); got != "" {
+	if got := NestedString(m, "device", "missing"); got != "" {
 		t.Errorf("missing leaf should return empty, got %q", got)
 	}
-	if got := nestedString(m, "no", "such", "path"); got != "" {
+	if got := NestedString(m, "no", "such", "path"); got != "" {
 		t.Errorf("missing path should return empty, got %q", got)
 	}
 }
@@ -45,14 +45,14 @@ func TestFetchSessionOK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := fetchSession(context.Background(), srv.URL, "abc-123", "Basic xyz")
+	info, err := FetchSession(context.Background(), srv.URL, "abc-123", "Basic xyz")
 	if err != nil {
-		t.Fatalf("fetchSession: %v", err)
+		t.Fatalf("FetchSession: %v", err)
 	}
 	if state, _ := info["state"].(string); state != "ACTIVE" {
 		t.Errorf("state = %v", info["state"])
 	}
-	if osKind := nestedString(info, "device", "os"); osKind != "IOS" {
+	if osKind := NestedString(info, "device", "os"); osKind != "IOS" {
 		t.Errorf("device.os = %q", osKind)
 	}
 }
@@ -81,7 +81,7 @@ func TestResolveAPIURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, warning, err := resolveAPIURL(tc.apiURL, tc.region)
+			got, warning, err := ResolveAPIURL(tc.apiURL, tc.region)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got url=%q", got)
@@ -92,7 +92,7 @@ func TestResolveAPIURL(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("resolveAPIURL(%q, %q) url = %q, want %q", tc.apiURL, tc.region, got, tc.want)
+				t.Errorf("ResolveAPIURL(%q, %q) url = %q, want %q", tc.apiURL, tc.region, got, tc.want)
 			}
 			if tc.wantWarning {
 				if warning == "" {
@@ -115,7 +115,7 @@ func TestFetchSessionHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetchSession(context.Background(), srv.URL, "abc-123", "Basic xyz")
+	_, err := FetchSession(context.Background(), srv.URL, "abc-123", "Basic xyz")
 	if err == nil {
 		t.Fatal("expected error on non-200 response")
 	}
