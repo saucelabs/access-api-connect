@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestNestedString(t *testing.T) {
@@ -118,5 +120,65 @@ func TestFetchSessionHTTPError(t *testing.T) {
 	_, err := fetchSession(context.Background(), srv.URL, "abc-123", "Basic xyz")
 	if err == nil {
 		t.Fatal("expected error on non-200 response")
+	}
+}
+
+// fakeSessionStates serves the given bodies in order, one per request, so a test
+// can walk a session through a sequence of states.
+func fakeSessionStates(t *testing.T, bodies ...string) string {
+	t.Helper()
+
+	var (
+		mu   sync.Mutex
+		next int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		body := "{}"
+		if next < len(bodies) {
+			body, next = bodies[next], next+1
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv.URL
+}
+
+// CREATING sits between PENDING and ACTIVE and real sessions pass through it, so
+// treating it as terminal fails a session that would have worked.
+func TestWaitForActivePassesThroughCreating(t *testing.T) {
+	restore := waitPollInterval
+	waitPollInterval = time.Millisecond
+	t.Cleanup(func() { waitPollInterval = restore })
+
+	url := fakeSessionStates(t,
+		`{"id":"abc","state":"CREATING"}`,
+		`{"id":"abc","state":"ACTIVE","links":{"vusbUrl":"wss://example.invalid/vusb"}}`,
+	)
+
+	info, err := waitForActive(context.Background(), url, "abc", "Basic x")
+	if err != nil {
+		t.Fatalf("waitForActive: %v", err)
+	}
+	if got := nestedString(info, "links", "vusbUrl"); got != "wss://example.invalid/vusb" {
+		t.Errorf("vusbUrl = %q, want the url from the ACTIVE response", got)
+	}
+}
+
+func TestWaitForActiveReportsTheErrorMessage(t *testing.T) {
+	url := fakeSessionStates(t,
+		`{"id":"abc","state":"ERRORED","error":{"message":"There is no device that matches the query"}}`,
+	)
+
+	_, err := waitForActive(context.Background(), url, "abc", "Basic x")
+	if err == nil {
+		t.Fatal("want an error for an ERRORED session")
+	}
+	// Without it, a failed allocation is indistinguishable from any other failure.
+	if !strings.Contains(err.Error(), "no device that matches the query") {
+		t.Errorf("error %q drops the API's explanation", err)
 	}
 }

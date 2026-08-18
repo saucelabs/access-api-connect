@@ -24,6 +24,9 @@ var regionURLs = map[string]string{
 // validRegions is the canonical order we list in error messages.
 var validRegions = []string{"US", "US_EAST", "EU"}
 
+// A variable rather than a constant so tests need not sleep for real.
+var waitPollInterval = 5 * time.Second
+
 // resolveAPIURL determines which REST API base URL to use given the two
 // possible inputs:
 //
@@ -89,7 +92,7 @@ func fetchSession(ctx context.Context, apiURL, sessionID, authHeader string) (ma
 }
 
 // waitForActive polls the session until it enters the ACTIVE state, or
-// returns immediately if it's in any non-PENDING terminal state.
+// returns immediately if it's in any state it can no longer leave.
 func waitForActive(ctx context.Context, apiURL, sessionID, authHeader string) (map[string]interface{}, error) {
 	for {
 		info, err := fetchSession(ctx, apiURL, sessionID, authHeader)
@@ -100,14 +103,20 @@ func waitForActive(ctx context.Context, apiURL, sessionID, authHeader string) (m
 		switch state {
 		case "ACTIVE":
 			return info, nil
-		case "PENDING":
-			log.Print("Session creation still pending, retrying in 5s...")
+		case "PENDING", "CREATING":
+			// CREATING follows PENDING once a device has been picked; both are
+			// still on the way to ACTIVE.
+			log.Printf("Session is %s, retrying in %s...", state, waitPollInterval)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(5 * time.Second):
+			case <-time.After(waitPollInterval):
 			}
 		default:
+			// error.message is the only thing that explains a failed allocation.
+			if message := nestedString(info, "error", "message"); message != "" {
+				return nil, fmt.Errorf("session not active: state=%q: %s", state, message)
+			}
 			return nil, fmt.Errorf("session not active: state=%q", state)
 		}
 	}
