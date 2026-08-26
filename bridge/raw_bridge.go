@@ -1,4 +1,4 @@
-package main
+package bridge
 
 import (
 	"context"
@@ -11,14 +11,15 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// adbConnSeq numbers accepted ADB connections for verbose logging.
-var adbConnSeq atomic.Uint64
+// rawConnSeq numbers accepted connections for verbose logging.
+var rawConnSeq atomic.Uint64
 
-// AdbConnectionBridge runs once per accepted TCP connection on the ADB
-// port. The Android endpoint carries raw ADB-protocol bytes inside binary
-// WebSocket frames — no multiplex framing — so each local TCP connection
-// gets its own dedicated WebSocket.
-type AdbConnectionBridge struct {
+// RawConnectionBridge runs once per accepted connection and copies bytes
+// between it and a WebSocket without interpreting them. It suits the endpoints
+// that carry a protocol unwrapped — adbUrl on Android, usbmuxdUrl on iOS —
+// where there is no multiplex framing, so each local connection gets its own
+// dedicated WebSocket.
+type RawConnectionBridge struct {
 	id        uint64
 	wsURL     string
 	sessionID string
@@ -26,11 +27,11 @@ type AdbConnectionBridge struct {
 	conn      net.Conn
 }
 
-// NewAdbConnectionBridge constructs a bridge around the freshly accepted
-// TCP conn. Call Run to drive it.
-func NewAdbConnectionBridge(wsURL, sessionID, authB64 string, conn net.Conn) *AdbConnectionBridge {
-	return &AdbConnectionBridge{
-		id:        adbConnSeq.Add(1),
+// NewRawConnectionBridge constructs a bridge around the freshly accepted
+// conn. Call Run to drive it.
+func NewRawConnectionBridge(wsURL, sessionID, authB64 string, conn net.Conn) *RawConnectionBridge {
+	return &RawConnectionBridge{
+		id:        rawConnSeq.Add(1),
 		wsURL:     wsURL,
 		sessionID: sessionID,
 		authB64:   authB64,
@@ -40,10 +41,10 @@ func NewAdbConnectionBridge(wsURL, sessionID, authB64 string, conn net.Conn) *Ad
 
 // Run dials the WebSocket and shovels bytes both directions until either
 // side closes.
-func (b *AdbConnectionBridge) Run(ctx context.Context) {
+func (b *RawConnectionBridge) Run(ctx context.Context) {
 	peer := b.conn.RemoteAddr()
-	vlog("adb client #%d connected: %s", b.id, peer)
-	defer vlog("adb client #%d disconnected", b.id)
+	vlog("client #%d connected: %s", b.id, peer)
+	defer vlog("client #%d disconnected", b.id)
 	defer b.conn.Close()
 
 	header := http.Header{}
@@ -56,7 +57,7 @@ func (b *AdbConnectionBridge) Run(ctx context.Context) {
 
 	ws, _, err := dialer.DialContext(ctx, b.wsURL, header)
 	if err != nil {
-		log.Printf("failed to open WebSocket for adb client #%d (%s): %v", b.id, peer, err)
+		log.Printf("failed to open WebSocket for client #%d (%s): %v", b.id, peer, err)
 		return
 	}
 
@@ -66,7 +67,7 @@ func (b *AdbConnectionBridge) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// TCP -> WS (raw ADB bytes, binary frames, no multiplex framing).
+	// Local -> WS (binary frames, no multiplex framing, no interpretation).
 	go func() {
 		defer wg.Done()
 		defer closeWS()

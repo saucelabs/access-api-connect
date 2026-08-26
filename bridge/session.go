@@ -1,4 +1,4 @@
-package main
+package bridge
 
 import (
 	"context"
@@ -24,7 +24,7 @@ var regionURLs = map[string]string{
 // validRegions is the canonical order we list in error messages.
 var validRegions = []string{"US", "US_EAST", "EU"}
 
-// resolveAPIURL determines which REST API base URL to use given the two
+// ResolveAPIURL determines which REST API base URL to use given the two
 // possible inputs:
 //
 //   - apiURL : explicit --api-url / SAUCE_API_URL value (wins when set)
@@ -34,7 +34,7 @@ var validRegions = []string{"US", "US_EAST", "EU"}
 // non-empty warning string that the caller is expected to surface to the
 // user (so they know --region was silently ignored). The error is non-nil
 // only if neither input is set or the region value is unknown.
-func resolveAPIURL(apiURL, region string) (url, warning string, err error) {
+func ResolveAPIURL(apiURL, region string) (url, warning string, err error) {
 	apiURL = strings.TrimSpace(apiURL)
 	region = strings.ToUpper(strings.TrimSpace(region))
 	if apiURL != "" {
@@ -56,9 +56,9 @@ func resolveAPIURL(apiURL, region string) (url, warning string, err error) {
 	return u, "", nil
 }
 
-// fetchSession does one GET /rdc/v2/sessions/{id} and returns the parsed
+// FetchSession does one GET /rdc/v2/sessions/{id} and returns the parsed
 // JSON response.
-func fetchSession(ctx context.Context, apiURL, sessionID, authHeader string) (map[string]interface{}, error) {
+func FetchSession(ctx context.Context, apiURL, sessionID, authHeader string) (map[string]interface{}, error) {
 	url := strings.TrimRight(apiURL, "/") + "/rdc/v2/sessions/" + sessionID
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -88,11 +88,11 @@ func fetchSession(ctx context.Context, apiURL, sessionID, authHeader string) (ma
 	return result, nil
 }
 
-// waitForActive polls the session until it enters the ACTIVE state, or
+// WaitForActive polls the session until it enters the ACTIVE state, or
 // returns immediately if it's in any non-PENDING terminal state.
-func waitForActive(ctx context.Context, apiURL, sessionID, authHeader string) (map[string]interface{}, error) {
+func WaitForActive(ctx context.Context, apiURL, sessionID, authHeader string) (map[string]interface{}, error) {
 	for {
-		info, err := fetchSession(ctx, apiURL, sessionID, authHeader)
+		info, err := FetchSession(ctx, apiURL, sessionID, authHeader)
 		if err != nil {
 			return nil, err
 		}
@@ -113,10 +113,10 @@ func waitForActive(ctx context.Context, apiURL, sessionID, authHeader string) (m
 	}
 }
 
-// nestedString walks the JSON map by successive keys and returns the
+// NestedString walks the JSON map by successive keys and returns the
 // string at the end (or empty string if anything along the path is missing
 // or the leaf is not a string).
-func nestedString(m map[string]interface{}, keys ...string) string {
+func NestedString(m map[string]interface{}, keys ...string) string {
 	var cur interface{} = m
 	for _, k := range keys {
 		mm, ok := cur.(map[string]interface{})

@@ -1,4 +1,4 @@
-package main
+package bridge
 
 import (
 	"context"
@@ -13,11 +13,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// dataHandler runs for a DATA frame on a registered channel; closeHandler
+// DataHandler runs for a DATA frame on a registered channel; CloseHandler
 // runs on CLOSE, and also when the bridge tears channels down before a
 // reconnect (ResetForReconnect).
-type dataHandler func([]byte) error
-type closeHandler func() error
+type DataHandler func([]byte) error
+type CloseHandler func() error
 
 // Keepalive: we ping on our own cadence and arm a read deadline, so a
 // silently dead link (sleep, NAT expiry, mid-path reset) fails the read in
@@ -46,8 +46,8 @@ type DeviceBridge struct {
 	chMu             sync.Mutex
 	nextChannel      uint32
 	channelFirstSend map[uint32]bool
-	dataHandlers     map[uint32]dataHandler
-	closeHandlers    map[uint32]closeHandler
+	dataHandlers     map[uint32]DataHandler
+	closeHandlers    map[uint32]CloseHandler
 
 	propsMu          sync.Mutex
 	deviceProperties map[string]interface{}
@@ -66,8 +66,8 @@ func NewDeviceBridge(wsURL, sessionID, username, accessKey string) *DeviceBridge
 		authB64:          base64.StdEncoding.EncodeToString([]byte(username + ":" + accessKey)),
 		nextChannel:      1,
 		channelFirstSend: map[uint32]bool{},
-		dataHandlers:     map[uint32]dataHandler{},
-		closeHandlers:    map[uint32]closeHandler{},
+		dataHandlers:     map[uint32]DataHandler{},
+		closeHandlers:    map[uint32]CloseHandler{},
 		localDeviceID:    1,
 		pingInterval:     defaultPingInterval,
 		pongTimeout:      defaultPongTimeout,
@@ -141,7 +141,7 @@ func (b *DeviceBridge) AllocChannel() uint32 {
 
 // RegisterHandlers wires up the per-channel callbacks. The reader loop
 // invokes onData for incoming DATA frames and onClose for CLOSE frames.
-func (b *DeviceBridge) RegisterHandlers(cid uint32, onData dataHandler, onClose closeHandler) {
+func (b *DeviceBridge) RegisterHandlers(cid uint32, onData DataHandler, onClose CloseHandler) {
 	b.chMu.Lock()
 	defer b.chMu.Unlock()
 	b.dataHandlers[cid] = onData
@@ -199,18 +199,18 @@ func (b *DeviceBridge) CloseChannel(cid uint32) error {
 }
 
 // ResetForReconnect drops every channel from the dead connection. Each
-// closeHandler fires as if a CLOSE arrived — passthrough handlers close
+// CloseHandler fires as if a CLOSE arrived — passthrough handlers close
 // their local usbmuxd connection, so tools see a device blip and retry.
 // Channel ids are never reused: nextChannel keeps incrementing.
 func (b *DeviceBridge) ResetForReconnect() {
 	b.chMu.Lock()
-	handlers := make([]closeHandler, 0, len(b.closeHandlers))
+	handlers := make([]CloseHandler, 0, len(b.closeHandlers))
 	for _, h := range b.closeHandlers {
 		handlers = append(handlers, h)
 	}
 	b.channelFirstSend = map[uint32]bool{}
-	b.dataHandlers = map[uint32]dataHandler{}
-	b.closeHandlers = map[uint32]closeHandler{}
+	b.dataHandlers = map[uint32]DataHandler{}
+	b.closeHandlers = map[uint32]CloseHandler{}
 	b.chMu.Unlock()
 
 	for _, h := range handlers {
