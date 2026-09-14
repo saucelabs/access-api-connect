@@ -171,12 +171,21 @@ func TestLowLevelAccessURL(t *testing.T) {
 }
 
 func TestNoLowLevelAccessErrorMessage(t *testing.T) {
-	// The message has to name the cause, the fix, and the links the user
-	// would have gone looking for — otherwise it is just another 404.
 	msg := errNoLowLevelAccess.Error()
-	for _, want := range []string{"public device", "private device", "adbUrl", "usbmuxdUrl", "vusbUrl", "docs.saucelabs.com"} {
+
+	// The message has to name the feature, the cause, the fix and where to
+	// read more — otherwise it is just another 404.
+	for _, want := range []string{"Low-level access", "public device", "private device", "docs.saucelabs.com"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error message missing %q: %s", want, msg)
+		}
+	}
+
+	// The response field names are an implementation detail; the user is told
+	// which device to run on instead.
+	for _, unwanted := range []string{"adbUrl", "usbmuxdUrl", "vusbUrl"} {
+		if strings.Contains(msg, unwanted) {
+			t.Errorf("error message should not expose the %q field name: %s", unwanted, msg)
 		}
 	}
 }
