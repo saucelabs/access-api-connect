@@ -378,7 +378,7 @@ func main() {
 		log.Fatalf("unsupported os=%q (expected IOS or ANDROID)", osKind)
 	}
 
-	deviceURL, err := virtualUsbURL(info)
+	deviceURL, err := lowLevelAccessURL(info)
 	if err != nil {
 		log.Fatal(err)
 	}
