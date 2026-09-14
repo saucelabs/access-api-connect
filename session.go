@@ -130,3 +130,30 @@ func nestedString(m map[string]interface{}, keys ...string) string {
 	}
 	return ""
 }
+
+// Low-level access links in a session response. The API publishes one link per
+// platform, plus a deprecated alias:
+//
+//	ANDROID — links.adbUrl      (wss://…/rdc/vusb/forward)
+//	IOS     — links.usbmuxdUrl  (wss://…/rdc/vusb/usbmuxd)
+//	both    — links.vusbUrl     (deprecated, same value as adbUrl)
+//
+// All three are omitted together when the allocated device is a public device,
+// because low-level access only works on private ones.
+func lowLevelAccessURL(info map[string]interface{}) (string, error) {
+	url := nestedString(info, "links", "vusbUrl")
+	if url == "" {
+		return "", errNoLowLevelAccess
+	}
+	return url, nil
+}
+
+// errNoLowLevelAccess is what the user sees when the session carries no
+// low-level access links. A public device is the only reason they are omitted,
+// so we name that cause outright instead of leaving the user to guess.
+var errNoLowLevelAccess = errors.New(
+	"Low-level access is not available for this session: it is running on a public device, " +
+		"and low-level access requires a private device.\n" +
+		"Start a session on a private device from your organization's device pool, " +
+		"then run access-api-connect against that session id.\n" +
+		"For further assistance, refer to our documentation: https://docs.saucelabs.com/dev/error-messages/")

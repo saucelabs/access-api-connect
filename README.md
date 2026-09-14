@@ -163,8 +163,8 @@ Appium UiAutomator2 capabilities work as usual; no special `udid` is required.
 
 ## Troubleshooting
 
-**"no vusbUrl in session response. Make sure the session was started with low-level access capabilities"**
-The session was created without the capability that turns on the Access API. Re-create the session with low-level access enabled, then re-run.
+**"Low-level access is not available for this session: it is running on a public device"**
+Low-level access only works on private devices, so the API omits the `adbUrl` / `usbmuxdUrl` / `vusbUrl` links for sessions allocated to a public device — there is no endpoint for the bridge to attach to. Start a session on a private device from your organization's device pool and re-run against that session id.
 
 **"failed to fetch device properties: timeout waiting for device properties"** *(iOS)*
 The WebSocket connected but the remote device never replied with its `ListDevices` answer. Usually means the session has gone unhealthy on the server side. Verify the session is still `ACTIVE` (e.g. via `GET /rdc/v2/sessions/{id}`), then re-run; if it persists, file a support ticket.
