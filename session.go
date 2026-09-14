@@ -131,7 +131,7 @@ func nestedString(m map[string]interface{}, keys ...string) string {
 	return ""
 }
 
-// Virtual USB links in a session response. rdc-manual publishes one link per
+// Virtual USB links in a session response. The API publishes one link per
 // platform, plus a deprecated alias:
 //
 //	ANDROID — links.adbUrl      (wss://…/rdc/vusb/forward)
@@ -149,8 +149,8 @@ func virtualUsbURL(info map[string]interface{}) (string, error) {
 }
 
 // errNoVirtualUsb is what the user sees when the session carries no Virtual USB
-// links. A public device is the only reason rdc-manual omits them, so we name
-// that cause outright instead of leaving the user to guess.
+// links. A public device is the only reason they are omitted, so we name that
+// cause outright instead of leaving the user to guess.
 var errNoVirtualUsb = errors.New(
 	"Virtual USB is not available for this session: it is running on a public device, " +
 		"and Virtual USB requires a private device (the session exposes no adbUrl, usbmuxdUrl or vusbUrl link).\n" +
