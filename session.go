@@ -153,7 +153,7 @@ func lowLevelAccessURL(info map[string]interface{}) (string, error) {
 // so we name that cause outright instead of leaving the user to guess.
 var errNoLowLevelAccess = errors.New(
 	"Low-level access is not available for this session: it is running on a public device, " +
-		"and low-level access requires a private device (the session exposes no adbUrl, usbmuxdUrl or vusbUrl link).\n" +
+		"and low-level access requires a private device.\n" +
 		"Start a session on a private device from your organization's device pool, " +
 		"then run access-api-connect against that session id.\n" +
 		"For further assistance, refer to our documentation: https://docs.saucelabs.com/dev/error-messages/")
