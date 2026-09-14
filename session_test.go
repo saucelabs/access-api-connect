@@ -120,3 +120,63 @@ func TestFetchSessionHTTPError(t *testing.T) {
 		t.Fatal("expected error on non-200 response")
 	}
 }
+
+func TestVirtualUsbURL(t *testing.T) {
+	links := func(kv ...string) map[string]interface{} {
+		l := map[string]interface{}{}
+		for i := 0; i < len(kv); i += 2 {
+			l[kv[i]] = kv[i+1]
+		}
+		return map[string]interface{}{"links": l}
+	}
+
+	cases := []struct {
+		name    string
+		info    map[string]interface{}
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "private android session",
+			info: links("adbUrl", "wss://example/forward", "vusbUrl", "wss://example/forward"),
+			want: "wss://example/forward",
+		},
+		{
+			// iOS dials vusbUrl (…/forward), not usbmuxdUrl (…/usbmuxd).
+			name: "private ios session",
+			info: links("usbmuxdUrl", "wss://example/usbmuxd", "vusbUrl", "wss://example/forward"),
+			want: "wss://example/forward",
+		},
+		// A public device drops all three links.
+		{name: "public device session", info: links(), wantErr: true},
+		{name: "no links at all", info: map[string]interface{}{}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := virtualUsbURL(tc.info)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got url=%q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("virtualUsbURL = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNoVirtualUsbErrorMessage(t *testing.T) {
+	// The message has to name the cause, the fix, and the links the user
+	// would have gone looking for — otherwise it is just another 404.
+	msg := errNoVirtualUsb.Error()
+	for _, want := range []string{"public device", "private device", "adbUrl", "usbmuxdUrl", "vusbUrl", "docs.saucelabs.com"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q: %s", want, msg)
+		}
+	}
+}

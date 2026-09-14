@@ -130,3 +130,30 @@ func nestedString(m map[string]interface{}, keys ...string) string {
 	}
 	return ""
 }
+
+// Virtual USB links in a session response. rdc-manual publishes one link per
+// platform, plus a deprecated alias:
+//
+//	ANDROID — links.adbUrl      (wss://…/rdc/vusb/forward)
+//	IOS     — links.usbmuxdUrl  (wss://…/rdc/vusb/usbmuxd)
+//	both    — links.vusbUrl     (deprecated, same value as adbUrl)
+//
+// All three are omitted together when the allocated device is a public device,
+// because Virtual USB only works on private ones.
+func virtualUsbURL(info map[string]interface{}) (string, error) {
+	url := nestedString(info, "links", "vusbUrl")
+	if url == "" {
+		return "", errNoVirtualUsb
+	}
+	return url, nil
+}
+
+// errNoVirtualUsb is what the user sees when the session carries no Virtual USB
+// links. A public device is the only reason rdc-manual omits them, so we name
+// that cause outright instead of leaving the user to guess.
+var errNoVirtualUsb = errors.New(
+	"Virtual USB is not available for this session: it is running on a public device, " +
+		"and Virtual USB requires a private device (the session exposes no adbUrl, usbmuxdUrl or vusbUrl link).\n" +
+		"Start a session on a private device from your organization's device pool, " +
+		"then run access-api-connect against that session id.\n" +
+		"For further assistance, refer to our documentation: https://docs.saucelabs.com/dev/error-messages/")

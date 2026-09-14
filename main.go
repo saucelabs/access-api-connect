@@ -18,7 +18,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -379,10 +378,9 @@ func main() {
 		log.Fatalf("unsupported os=%q (expected IOS or ANDROID)", osKind)
 	}
 
-	deviceURL := nestedString(info, "links", "vusbUrl")
-	if deviceURL == "" {
-		links, _ := json.Marshal(info["links"])
-		log.Fatalf("no vusbUrl in session response. Make sure the session was started with low-level access capabilities. Available links: %s", links)
+	deviceURL, err := virtualUsbURL(info)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	log.Printf("session : %s", sessionID)
